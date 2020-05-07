@@ -8,12 +8,14 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RestSharp;
+using Tesseract;
 
 namespace QuickOCR
 {
@@ -58,11 +60,11 @@ namespace QuickOCR
         Point sLoc = default(Point);
         Point endLoc = default(Point);
         Rectangle playArea;
-        RestClient client = new RestClient("https://ocr-example.herokuapp.com/");
 
         private void pictureBox1_MouseDown(object sender, MouseEventArgs e)
         {
             sLoc = e.Location;
+            endLoc = e.Location;
         }
 
         private void pictureBox1_MouseMove(object sender, MouseEventArgs e)
@@ -71,7 +73,7 @@ namespace QuickOCR
             {
                 endLoc = e.Location;
                 pg.Clear(Color.FromArgb(100, 0, 0, 255));
-                pg.FillRectangle(new SolidBrush(Color.FromArgb(100, 255, 255, 255)), new Rectangle(sLoc, (Size)(e.Location - (Size)sLoc)));
+                pg.FillRectangle(new SolidBrush(Color.FromArgb(100, 255, 255, 255)), new Rectangle(Math.Min(sLoc.X, e.Location.X), Math.Min(sLoc.Y, e.Location.Y), Math.Abs(e.Location.X - sLoc.X), Math.Abs(e.Location.Y - sLoc.Y)));
                 pictureBox1.Refresh();
             }
         }
@@ -80,47 +82,61 @@ namespace QuickOCR
         {
             Size = new Size(Width / 5, Height / 5);
             WindowState = FormWindowState.Normal;
+            playArea = new Rectangle(Math.Min(sLoc.X, endLoc.X), Math.Min(sLoc.Y, endLoc.Y), Math.Abs(endLoc.X - sLoc.X), Math.Abs(endLoc.Y - sLoc.Y));
             if (Screen.GetBounds(this).Height - endLoc.Y > Height)
             {
                 Location = new Point(sLoc.X, endLoc.Y);
+                Width = playArea.Width;
             }
             else if (Screen.GetBounds(this).Width - endLoc.X > Width)
             {
                 Location = new Point(endLoc.X, sLoc.Y);
+                Height = playArea.Height;
             }
             else if (sLoc.X > Width)
             {
                 Location = new Point(sLoc.X - Width, sLoc.Y);
+                Height = playArea.Height;
             }
             else if (sLoc.Y > Height)
             {
                 Location = new Point(sLoc.X, sLoc.Y - Height);
+                Width = playArea.Width;
             }
             else
             {
                 Location = new Point(sLoc.X, endLoc.Y);
+                Width = playArea.Width;
             }
-            playArea = new Rectangle(sLoc, (Size)(endLoc - (Size)sLoc));
-
-            pictureBox1.BackgroundImage = null;
-            pictureBox1.Image = null;
-            textBox1.Show();
-            textBox1.Text = "Loading...";
-            pictureBox1.Hide();
-            await doOCR();
+            if (playArea.Size.IsEmpty)
+            {
+                Application.Exit();
+                return;
+            }
+            else
+            {
+                pictureBox1.BackgroundImage = null;
+                pictureBox1.Image = null;
+                textBox1.Show();
+                textBox1.Text = "Loading...";
+                pictureBox1.Hide();
+                await Task.Run(() => doOCR());
+            }
         }
 
-        async Task doOCR()
+        void doOCR()
         {
-            RestRequest request = new RestRequest("/file", Method.POST);
+            var engine = new TesseractEngine("tessdata", "eng+chi_tra");
+            Pix tessImg;
             using (var ms = new MemoryStream())
             {
-                cropAtRect(img, playArea).Save(ms, ImageFormat.Png);
-                request.AddFile("file", ms.ToArray(), "file.png");
+                cropAtRect(img, playArea).Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                tessImg = Pix.LoadFromMemory(ms.ToArray());
             }
-            IRestResponse response = await client.ExecuteAsync(request);
-            dynamic obj = JObject.Parse(response.Content);
-            textBox1.Text = obj.result;
+            using (var page = engine.Process(tessImg))
+            {
+                textBox1.Text = Regex.Replace(page.GetText(), @"\r\n|\r|\n", "\r\n");
+            }
         }
 
         public static Bitmap cropAtRect(Image b, Rectangle r)
@@ -185,7 +201,7 @@ namespace QuickOCR
         /// <param name="handle"></param>
         /// <param name="filename"></param>
         /// <param name="format"></param>
-        public void CaptureWindowToFile(IntPtr handle, string filename, ImageFormat format)
+        public void CaptureWindowToFile(IntPtr handle, string filename, System.Drawing.Imaging.ImageFormat format)
         {
             Image img = CaptureWindow(handle);
             img.Save(filename, format);
@@ -195,7 +211,7 @@ namespace QuickOCR
         /// </summary>
         /// <param name="filename"></param>
         /// <param name="format"></param>
-        public void CaptureScreenToFile(string filename, ImageFormat format)
+        public void CaptureScreenToFile(string filename, System.Drawing.Imaging.ImageFormat format)
         {
             Image img = CaptureScreen();
             img.Save(filename, format);
